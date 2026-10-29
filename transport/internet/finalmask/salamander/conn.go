@@ -113,6 +113,12 @@ func NewGeckoConnClient(c *GeckoConfig, raw net.PacketConn) (net.PacketConn, err
 	return g, nil
 }
 
+// QUICPacketConn opts into UDP offload together with a safe initial packet size.
+// Callers must apply the size because Gecko adds bytes outside QUIC's payload.
+func (g *geckoConn) QUICPacketConn() (net.PacketConn, uint16) {
+	return wrapGeckoUDP(g)
+}
+
 func NewGeckoConnServer(c *GeckoConfig, raw net.PacketConn) (net.PacketConn, error) {
 	return NewGeckoConnClient(c, raw)
 }
@@ -145,13 +151,13 @@ func (g *geckoConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 	}
 	if p[0]&0x80 != 0 {
 		// QUIC long header, do fragmentation.
-		return g.writeFragmented(p, addr)
+		return g.writeFragmented(p, addr, g.writeObfs)
 	}
 	// QUIC short header (data), pass through.
 	return g.writeObfs(p, addr)
 }
 
-func (g *geckoConn) writeFragmented(p []byte, addr net.Addr) (int, error) {
+func (g *geckoConn) writeFragmented(p []byte, addr net.Addr, write func([]byte, net.Addr) (int, error)) (int, error) {
 	chunks := randomFragmentChunks()
 	chunkSize := len(p) / chunks
 	msgID := uint8(g.msgID.Add(1))
@@ -173,7 +179,7 @@ func (g *geckoConn) writeFragmented(p []byte, addr net.Addr) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		if _, err := g.writeObfs(buf[:n], addr); err != nil {
+		if _, err := write(buf[:n], addr); err != nil {
 			return 0, err
 		}
 	}

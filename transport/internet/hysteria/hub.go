@@ -328,6 +328,14 @@ func Listen(ctx context.Context, address net.Address, port net.Port, streamSetti
 		return nil, err
 	}
 
+	if !quicParams.DisableGSO {
+		if provider, ok := pktConn.(interface {
+			QUICPacketConn() (net.PacketConn, uint16)
+		}); ok {
+			pktConn, quicConfig.InitialPacketSize = provider.QUICPacketConn()
+		}
+	}
+
 	var k *quic.StatelessResetKey
 	if !quicParams.DisableStatelessReset {
 		k = &quic.StatelessResetKey{}
