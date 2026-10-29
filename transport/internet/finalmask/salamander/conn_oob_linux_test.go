@@ -10,6 +10,7 @@ import (
 
 	quic "github.com/apernet/quic-go"
 	"golang.org/x/net/ipv4"
+	"golang.org/x/net/nettest"
 	"golang.org/x/sys/unix"
 )
 
@@ -209,22 +210,114 @@ func TestGeckoGSOMixedHeaders(t *testing.T) {
 	}
 }
 
-func TestGeckoWildcardKeepsPacketConnPath(t *testing.T) {
+func TestGeckoUDPBindAddresses(t *testing.T) {
+	for _, tc := range []struct {
+		name, network, peerNetwork string
+		listenIP, targetIP         net.IP
+	}{
+		{"ipv4", "udp4", "udp4", net.IPv4(127, 0, 0, 1), net.IPv4(127, 0, 0, 1)},
+		{"ipv4_wildcard", "udp4", "udp4", net.IPv4zero, net.IPv4(127, 0, 0, 2)},
+		{"ipv6", "udp6", "udp6", net.IPv6loopback, net.IPv6loopback},
+		{"ipv6_wildcard", "udp6", "udp6", net.IPv6zero, net.IPv6loopback},
+		{"dualstack_ipv4", "udp", "udp4", nil, net.IPv4(127, 0, 0, 2)},
+		{"dualstack_ipv6", "udp", "udp6", nil, net.IPv6loopback},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.network != "udp4" && !nettest.SupportsIPv6() {
+				t.Skip("IPv6 sockets unavailable")
+			}
+			raw, err := net.ListenUDP(tc.network, &net.UDPAddr{IP: tc.listenIP})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { raw.Close() })
+			peerIP := net.IPv6loopback
+			level, option := unix.IPPROTO_IPV6, unix.IPV6_RECVPKTINFO
+			if tc.targetIP.To4() != nil {
+				peerIP = net.IPv4(127, 0, 0, 1)
+				level, option = unix.IPPROTO_IP, unix.IP_PKTINFO
+			}
+			peerRaw, err := net.ListenUDP(tc.peerNetwork, &net.UDPAddr{IP: peerIP})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { peerRaw.Close() })
+			config := &GeckoConfig{Password: "local-offload-test"}
+			wrapped, err := NewGeckoConnServer(config, raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { wrapped.Close() })
+			adapted, initialPacketSize := wrapped.(*geckoConn).QUICPacketConn()
+			server, ok := adapted.(quic.OOBCapablePacketConn)
+			if !ok || initialPacketSize != 1200 {
+				t.Fatalf("missing offload adapter: %T, initial=%d", adapted, initialPacketSize)
+			}
+			fd, err := server.SyscallConn()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var socketErr error
+			if err := fd.Control(func(fd uintptr) { socketErr = unix.SetsockoptInt(int(fd), level, option, 1) }); err != nil || socketErr != nil {
+				t.Fatalf("packet info: %v %v", err, socketErr)
+			}
+			// The peer retains the original decoder and receives independent UDP datagrams.
+			peer, err := NewGeckoConnClient(config, packetOnlyConn{peerRaw})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { peer.Close() })
+			target := &net.UDPAddr{IP: tc.targetIP, Port: raw.LocalAddr().(*net.UDPAddr).Port}
+			for _, first := range []byte{0x40, 0xc0} {
+				request := bytes.Repeat([]byte{first}, 1200)
+				if _, err := peer.WriteTo(request, target); err != nil {
+					t.Fatal(err)
+				}
+				server.SetReadDeadline(time.Now().Add(2 * time.Second))
+				buffer, control := make([]byte, 2048), make([]byte, 256)
+				n, nn, flags, from, err := server.ReadMsgUDP(buffer, control)
+				if err != nil || flags != 0 || !bytes.Equal(buffer[:n], request) {
+					t.Fatalf("read n=%d flags=%d err=%v", n, flags, err)
+				}
+				if nn == 0 {
+					t.Fatal("missing destination packet info")
+				}
+				control = append(control[:nn:nn], segmentControl(1200)...)
+				reply := bytes.Repeat([]byte{0x40}, 2437)
+				if n, _, err := server.WriteMsgUDP(reply, control, from); err != nil || n != len(reply) {
+					t.Fatalf("write n=%d err=%v", n, err)
+				}
+				peer.SetReadDeadline(time.Now().Add(2 * time.Second))
+				for offset := 0; offset < len(reply); offset += 1200 {
+					n, from, err := peer.ReadFrom(buffer)
+					if err != nil || !bytes.Equal(buffer[:n], reply[offset:min(offset+1200, len(reply))]) {
+						t.Fatalf("reply offset=%d n=%d err=%v", offset, n, err)
+					}
+					if !from.(*net.UDPAddr).IP.Equal(tc.targetIP) {
+						t.Fatalf("wrong reply source: got %v, want %v", from, target)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestGeckoUnsupportedUDPConnKeepsPacketConnPath(t *testing.T) {
 	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { conn.Close() })
-	wrapped, err := NewGeckoConnServer(&GeckoConfig{Password: "local-offload-test"}, conn)
+	wrapped, err := NewGeckoConnServer(&GeckoConfig{Password: "local-offload-test"}, packetOnlyConn{conn})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { wrapped.Close() })
 	wrapped, initialPacketSize := wrapped.(*geckoConn).QUICPacketConn()
 	if initialPacketSize != 0 {
-		t.Fatal("unexpected initial packet override for wildcard binding")
+		t.Fatal("unexpected initial packet override for opaque wrapper")
 	}
 	if _, ok := wrapped.(quic.OOBCapablePacketConn); ok {
-		t.Fatal("unexpected offload for wildcard binding")
+		t.Fatal("unexpected offload for opaque wrapper")
 	}
 }

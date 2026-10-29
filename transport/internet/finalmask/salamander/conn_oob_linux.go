@@ -19,12 +19,7 @@ type geckoUDPConn struct {
 
 func wrapGeckoUDP(conn *geckoConn) (net.PacketConn, uint16) {
 	udp, ok := conn.PacketConn.(*net.UDPConn)
-	if !ok {
-		return conn, 0
-	}
-	addr := udp.LocalAddr().(*net.UDPAddr)
-	// The extra salt must fit the path MTU; keep other address families unchanged.
-	if addr.IP.To4() == nil || addr.IP.IsUnspecified() || udp.RemoteAddr() != nil {
+	if !ok || udp.RemoteAddr() != nil {
 		return conn, 0
 	}
 	return &geckoUDPConn{geckoConn: conn, udp: udp}, 1200
@@ -159,7 +154,7 @@ func (c *geckoUDPConn) WriteMsgUDP(p, oob []byte, addr *net.UDPAddr) (int, int, 
 			return written, len(oob), nil
 		}
 	}
-	// Linux limits a send to 64 segments and the aggregate IPv4 UDP payload size.
+	// Both IP families use the conservative IPv4 payload limit and at most 64 segments.
 	maxSegments := min(64, 65507/(segmentSize+smSaltLen))
 	if maxSegments == 0 {
 		return 0, 0, syscall.EMSGSIZE
