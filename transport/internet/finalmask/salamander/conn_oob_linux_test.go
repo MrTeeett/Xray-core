@@ -321,3 +321,46 @@ func TestGeckoUnsupportedUDPConnKeepsPacketConnPath(t *testing.T) {
 		t.Fatal("unexpected offload for opaque wrapper")
 	}
 }
+
+func TestGeckoLargePaddingPreservesSocketFragmentation(t *testing.T) {
+	raw, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { raw.Close() })
+	fd, err := raw.SyscallConn()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var before, after int
+	var socketErr error
+	if err := fd.Control(func(fd uintptr) {
+		before, socketErr = unix.GetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_MTU_DISCOVER)
+	}); err != nil || socketErr != nil {
+		t.Fatalf("read original PMTU mode: %v %v", err, socketErr)
+	}
+	wrapped, err := NewGeckoConnServer(&GeckoConfig{Password: "local-offload-test", MinPacketSize: 1600, MaxPacketSize: 1600}, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { wrapped.Close() })
+	conn, _ := wrapped.(*geckoConn).QUICPacketConn()
+	peer, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { peer.Close() })
+	tr := &quic.Transport{Conn: conn}
+	t.Cleanup(func() { tr.Close() })
+	if _, err := tr.WriteTo(bytes.Repeat([]byte{0xc0}, 1200), peer.LocalAddr()); err != nil {
+		t.Fatal(err)
+	}
+	if err := fd.Control(func(fd uintptr) {
+		after, socketErr = unix.GetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_MTU_DISCOVER)
+	}); err != nil || socketErr != nil {
+		t.Fatalf("read resulting PMTU mode: %v %v", err, socketErr)
+	}
+	if after != before {
+		t.Fatalf("large-padding profile lost its fragmentation policy: before=%d after=%d", before, after)
+	}
+}

@@ -19,7 +19,8 @@ type geckoUDPConn struct {
 
 func wrapGeckoUDP(conn *geckoConn) (net.PacketConn, uint16) {
 	udp, ok := conn.PacketConn.(*net.UDPConn)
-	if !ok || udp.RemoteAddr() != nil {
+	// QUIC enables DF on raw sockets; larger Gecko padding requires the legacy path.
+	if !ok || udp.RemoteAddr() != nil || conn.maxPkt > geckoDefaultMaxPacket {
 		return conn, 0
 	}
 	return &geckoUDPConn{geckoConn: conn, udp: udp}, 1200
