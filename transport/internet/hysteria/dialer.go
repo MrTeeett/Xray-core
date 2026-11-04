@@ -143,7 +143,8 @@ func (c *client) dial(ctx context.Context) error {
 		}
 	}
 
-	tr := &quic.Transport{Conn: pktConn, DisableGSO: quicParams.DisableGSO}
+	pktConn = internet.QUICPacketConn(pktConn, quicParams.Congestion == "force-brutal" && !quicParams.DisableGSO)
+	tr := &quic.Transport{Conn: pktConn, DisableGSO: internet.QUICDisableGSO(pktConn, quicParams.DisableGSO)}
 
 	if !quicParams.DisableChromeParrot {
 		tr.ConnectionIDGenerator = quic.ZeroLengthConnectionIDGenerator{}

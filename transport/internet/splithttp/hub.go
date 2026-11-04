@@ -501,7 +501,8 @@ func ListenXH(ctx context.Context, address net.Address, port net.Port, streamSet
 			common.Must2(rand.Read((*k)[:]))
 		}
 
-		tr := &quic.Transport{Conn: pktConn, DisableGSO: quicParams.DisableGSO, StatelessResetKey: k}
+		pktConn = internet.QUICPacketConn(pktConn, quicParams.Congestion == "force-brutal" && !quicParams.DisableGSO)
+		tr := &quic.Transport{Conn: pktConn, DisableGSO: internet.QUICDisableGSO(pktConn, quicParams.DisableGSO), StatelessResetKey: k}
 
 		l.h3listener, err = tr.ListenEarly(tlsConfig, quicConfig)
 		if err != nil {

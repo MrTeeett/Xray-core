@@ -132,7 +132,8 @@ func (l *Listener) listenHTTP3(address net.Address, port net.Port, streamSetting
 		resetKey = &quic.StatelessResetKey{}
 		common.Must2(rand.Read(resetKey[:]))
 	}
-	l.transport = &quic.Transport{Conn: l.pktConn, DisableGSO: quicParams.DisableGSO, StatelessResetKey: resetKey}
+	l.pktConn = internet.QUICPacketConn(l.pktConn, quicParams.Congestion == "force-brutal" && !quicParams.DisableGSO)
+	l.transport = &quic.Transport{Conn: l.pktConn, DisableGSO: internet.QUICDisableGSO(l.pktConn, quicParams.DisableGSO), StatelessResetKey: resetKey}
 
 	gotlsConfig := tlsConfig.GetTLSConfig()
 	gotlsConfig.NextProtos = []string{http3.NextProtoH3}

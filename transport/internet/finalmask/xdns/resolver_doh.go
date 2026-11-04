@@ -77,7 +77,8 @@ func NewDOHResolver(config *ResolverProto, dialer *finalmask.Dialer) (Resolver, 
 					return nil, err
 				}
 				setaddr(conn.RemoteAddr())
-				tr := &quic.Transport{Conn: conn.(*net.PacketConnWrapper).PacketConn, DisableGSO: quicParams.DisableGSO}
+				pktConn := internet.QUICPacketConn(conn.(*net.PacketConnWrapper).PacketConn, quicParams.Congestion == "force-brutal" && !quicParams.DisableGSO)
+				tr := &quic.Transport{Conn: pktConn, DisableGSO: internet.QUICDisableGSO(pktConn, quicParams.DisableGSO)}
 				if !quicParams.DisableChromeParrot {
 					tr.ConnectionIDGenerator = quic.ZeroLengthConnectionIDGenerator{}
 					tlsCfg.GetCertificate = nil

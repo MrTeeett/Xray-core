@@ -117,6 +117,14 @@ func NewGeckoConnServer(c *GeckoConfig, raw net.PacketConn) (net.PacketConn, err
 	return NewGeckoConnClient(c, raw)
 }
 
+// QUICPacketConn enables batching only for a controller chosen before QUIC starts.
+func (g *geckoConn) QUICPacketConn(enableGSO bool) net.PacketConn {
+	if enableGSO {
+		return optimizeGeckoConn(g)
+	}
+	return g
+}
+
 func (c *geckoConn) readObfs(p []byte) (n int, addr net.Addr, err error) {
 	for {
 		n, addr, err = c.PacketConn.ReadFrom(p)
@@ -152,6 +160,13 @@ func (g *geckoConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 }
 
 func (g *geckoConn) writeFragmented(p []byte, addr net.Addr) (int, error) {
+	return g.writeFragments(p, func(frame []byte) error {
+		_, err := g.writeObfs(frame, addr)
+		return err
+	})
+}
+
+func (g *geckoConn) writeFragments(p []byte, write func([]byte) error) (int, error) {
 	chunks := randomFragmentChunks()
 	chunkSize := len(p) / chunks
 	msgID := uint8(g.msgID.Add(1))
@@ -173,7 +188,7 @@ func (g *geckoConn) writeFragmented(p []byte, addr net.Addr) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		if _, err := g.writeObfs(buf[:n], addr); err != nil {
+		if err := write(buf[:n]); err != nil {
 			return 0, err
 		}
 	}
