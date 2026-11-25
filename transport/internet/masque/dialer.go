@@ -105,7 +105,8 @@ func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.Me
 		}
 	}
 
-	tr := &quic.Transport{Conn: pktConn, DisableGSO: quicParams.DisableGSO}
+	pktConn = internet.QUICPacketConn(pktConn, quicParams.Congestion == "force-brutal" && !quicParams.DisableGSO)
+	tr := &quic.Transport{Conn: pktConn, DisableGSO: internet.QUICDisableGSO(pktConn, quicParams.DisableGSO)}
 	if config.Warp != nil {
 		tr.ConnectionIDLength = 20
 	}

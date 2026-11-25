@@ -289,7 +289,8 @@ func newServiceClient(connCtx context.Context, h1Hosts *sync.Map, streamSettings
 				gotlsConfig := tlsConfig.GetTLSConfig(tls.WithDestination(host))
 				// it is for servers, and ChromeParrot refuses a config that has it
 				gotlsConfig.GetCertificate = nil
-				tr := &quic.Transport{Conn: pktConn, DisableGSO: quicParams.DisableGSO}
+				pktConn = internet.QUICPacketConn(pktConn, false)
+				tr := &quic.Transport{Conn: pktConn, DisableGSO: internet.QUICDisableGSO(pktConn, quicParams.DisableGSO)}
 				if !quicParams.DisableChromeParrot {
 					tr.ConnectionIDGenerator = quic.ZeroLengthConnectionIDGenerator{}
 				}
